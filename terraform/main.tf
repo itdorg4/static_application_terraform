@@ -25,7 +25,7 @@ variable "key_name" {
 }
 
 variable "instance_name" {
-  default = "june2026-static-site"
+  default = "june2026-static-tf"
 }
 
 variable "instance_type" {
