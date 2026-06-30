@@ -1,0 +1,58 @@
+name: CI/CD Deploy (Terraform)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    outputs:
+      host: ${{ steps.tf.outputs.public_ip }}
+      hostname: ${{ steps.tf.outputs.public_dns }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ap-south-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform apply
+        id: tf
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=static-site/terraform.tfstate" \
+            -backend-config="region=ap-south-1"
+          terraform apply -auto-approve
+          echo "public_ip=$(terraform output -raw public_ip)"   >> "$GITHUB_OUTPUT"
+          echo "public_dns=$(terraform output -raw public_dns)" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: provision
+    runs-on: ubuntu-latest
+    env:
+      PEM_DIR: ~/.ssh
+      SSH_KEY_NAME: june2026.pem
+      SSH_HOST: ${{ needs.provision.outputs.host }}
+      SSH_USER: ubuntu
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Deploying to $SSH_HOST (${{ needs.provision.outputs.hostname }})"
+      - run: pip install paramiko
+      - run: mkdir -p ~/.ssh && printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/june2026.pem && chmod 600 ~/.ssh/june2026.pem
+      - name: Wait for SSH to be ready
+        run: |
+          for i in $(seq 1 30); do
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+              -i ~/.ssh/june2026.pem ubuntu@"$SSH_HOST" true && exit 0
+            echo "SSH not ready yet ($i/30), retrying..."
+            sleep 10
+          done
+          echo "SSH never became ready" && exit 1
+      - run: python deploy.py
